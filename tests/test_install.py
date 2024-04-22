@@ -338,6 +338,12 @@ def test_preinstall(pipx_temp_env, caplog):
     assert "black" in caplog.text
 
 
+def test_preinstall_multiple(pipx_temp_env, caplog):
+    assert not run_pipx_cli(["install", "--preinstall", "chardet", "--preinstall", "colorama", "nox"])
+    assert "chardet" in caplog.text
+    assert "colorama" in caplog.text
+
+
 @pytest.mark.xfail
 def test_do_not_wait_for_input(pipx_temp_env, pipx_session_shared_dir, monkeypatch):
     monkeypatch.setenv("PIP_INDEX_URL", "http://127.0.0.1:8080/simple")
@@ -350,14 +356,24 @@ def test_passed_python_and_force_flag_warning(pipx_temp_env, capsys):
     captured = capsys.readouterr()
     assert "--python is ignored when --force is passed." in captured.out
 
+    assert not run_pipx_cli(["install", "black", "--force"])
+    captured = capsys.readouterr()
+    assert (
+        "--python is ignored when --force is passed." not in captured.out
+    ), "Should only print warning if both flags present"
+
     assert not run_pipx_cli(["install", "pycowsay", "--force"])
     captured = capsys.readouterr()
-    assert "--python is ignored when --force is passed." not in captured.out
+    assert (
+        "--python is ignored when --force is passed." not in captured.out
+    ), "Should not print warning if package does not exist yet"
 
 
-def test_install_run_in_separate_directory(caplog, capsys, pipx_temp_env, monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    f = Path("argparse.py")
-    f.touch()
-
-    install_packages(capsys, pipx_temp_env, caplog, ["pycowsay"], ["pycowsay"])
+@pytest.mark.parametrize(
+    "python_version",
+    ["3.0", "3.1"],
+)
+def test_install_fetch_missing_python_invalid(capsys, python_version):
+    assert run_pipx_cli(["install", "--python", python_version, "--fetch-missing-python", "pycowsay"])
+    captured = capsys.readouterr()
+    assert f"No executable for the provided Python version '{python_version}' found" in captured.out

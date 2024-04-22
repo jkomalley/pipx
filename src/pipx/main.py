@@ -174,6 +174,15 @@ def get_venv_args(parsed_args: Dict[str, str]) -> List[str]:
     return venv_args
 
 
+def package_is_url(package: str, raise_error: bool = True) -> bool:
+    url_parse_package = urllib.parse.urlparse(package)
+    if url_parse_package.scheme and url_parse_package.netloc:
+        if not raise_error:
+            return True
+        raise PipxError("Package cannot be a URL. A valid package name should be passed instead.")
+    return False
+
+
 def run_pipx_command(args: argparse.Namespace, subparsers: Dict[str, argparse.ArgumentParser]) -> ExitCode:  # noqa: C901
     verbose = args.verbose if "verbose" in args else False
     if not constants.WINDOWS and args.is_global:
@@ -185,23 +194,49 @@ def run_pipx_command(args: argparse.Namespace, subparsers: Dict[str, argparse.Ar
 
     if "package" in args:
         package = args.package
-        if urllib.parse.urlparse(package).scheme:
-            raise PipxError("Package cannot be a url")
+        package_is_url(package)
 
         if "spec" in args and args.spec is not None:
-            if urllib.parse.urlparse(args.spec).scheme:
+            if package_is_url(args.spec, raise_error=False):
                 if "#egg=" not in args.spec:
                     args.spec = args.spec + f"#egg={package}"
 
+        if args.command == "reinstall":
+            # Passing paths into `reinstall` might have unintended
+            # side effects.
+            if Path(package).is_absolute() or Path(package).exists():
+                raise PipxError(
+                    pipx_wrap(
+                        f"""
+                        Error: Path '{package}' given as
+                        package. Expected the name of
+                        an installed package.
+                        """
+                    )
+                )
+
         venv_dir = venv_container.get_venv_dir(package)
         logger.info(f"Virtual Environment location is {venv_dir}")
+
+    if "packages" in args:
+        for package in args.packages:
+            package_is_url(package)
+        venv_dirs = {package: venv_container.get_venv_dir(package) for package in args.packages}
+        venv_dirs_msg = "\n".join(f"- {key} : {value}" for key, value in venv_dirs.items())
+        logger.info(f"Virtual Environment locations are:\n{venv_dirs_msg}")
+
     if "skip" in args:
         skip_list = [canonicalize_name(x) for x in args.skip]
 
-    if "python" in args and args.python is not None:
+    python_flag_passed = False
+
+    if "python" in args:
+        python_flag_passed = bool(args.python)
         fetch_missing_python = args.fetch_missing_python
         try:
-            interpreter = find_python_interpreter(args.python, fetch_missing_python=fetch_missing_python)
+            interpreter = find_python_interpreter(
+                args.python or DEFAULT_PYTHON, fetch_missing_python=fetch_missing_python
+            )
             args.python = interpreter
         except InterpreterResolutionError as e:
             logger.debug("Failed to resolve interpreter:", exc_info=True)
@@ -244,6 +279,18 @@ def run_pipx_command(args: argparse.Namespace, subparsers: Dict[str, argparse.Ar
             include_dependencies=args.include_deps,
             preinstall_packages=args.preinstall,
             suffix=args.suffix,
+            python_flag_passed=python_flag_passed,
+        )
+    elif args.command == "install-all":
+        return commands.install_all(
+            args.spec_metadata_file,
+            paths.ctx.bin_dir,
+            paths.ctx.man_dir,
+            args.python,
+            pip_args,
+            venv_args,
+            verbose,
+            force=args.force,
         )
     elif args.command == "inject":
         return commands.inject(
@@ -268,13 +315,14 @@ def run_pipx_command(args: argparse.Namespace, subparsers: Dict[str, argparse.Ar
         )
     elif args.command == "upgrade":
         return commands.upgrade(
-            venv_dir,
+            venv_dirs,
             args.python,
             pip_args,
             verbose,
             include_injected=args.include_injected,
             force=args.force,
             install=args.install,
+            python_flag_passed=python_flag_passed,
         )
     elif args.command == "upgrade-all":
         return commands.upgrade_all(
@@ -284,6 +332,7 @@ def run_pipx_command(args: argparse.Namespace, subparsers: Dict[str, argparse.Ar
             skip=skip_list,
             force=args.force,
             pip_args=pip_args,
+            python_flag_passed=python_flag_passed,
         )
     elif args.command == "list":
         return commands.list_packages(
@@ -318,6 +367,7 @@ def run_pipx_command(args: argparse.Namespace, subparsers: Dict[str, argparse.Ar
             local_man_dir=paths.ctx.man_dir,
             python=args.python,
             verbose=verbose,
+            python_flag_passed=python_flag_passed,
         )
     elif args.command == "reinstall-all":
         return commands.reinstall_all(
@@ -327,6 +377,7 @@ def run_pipx_command(args: argparse.Namespace, subparsers: Dict[str, argparse.Ar
             args.python,
             verbose,
             skip=skip_list,
+            python_flag_passed=python_flag_passed,
         )
     elif args.command == "runpip":
         if not venv_dir:
@@ -375,7 +426,6 @@ def add_include_dependencies(parser: argparse.ArgumentParser) -> None:
 def add_python_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--python",
-        default=DEFAULT_PYTHON,
         help=(
             "Python to install with. Possible values can be the executable name (python3.11), "
             "the version to pass to py launcher (3.11), or the full path to the executable."
@@ -419,8 +469,30 @@ def _add_install(subparsers: argparse._SubParsersAction, shared_parser: argparse
     p.add_argument(
         "--preinstall",
         action="append",
-        help=("Optional packages to be installed into the Virtual Environment before " "installing the main package."),
+        help=(
+            "Optional package to be installed into the Virtual Environment before "
+            "installing the main package. Use this flag multiple times if you want to preinstall multiple packages."
+        ),
     )
+    add_pip_venv_args(p)
+
+
+def _add_install_all(subparsers: argparse._SubParsersAction, shared_parser: argparse.ArgumentParser) -> None:
+    p = subparsers.add_parser(
+        "install-all",
+        help="Install all packages",
+        formatter_class=LineWrapRawTextHelpFormatter,
+        description="Installs all the packages according to spec metadata file.",
+        parents=[shared_parser],
+    )
+    p.add_argument("spec_metadata_file", help="Spec metadata file generated from pipx list --json")
+    p.add_argument(
+        "--force",
+        "-f",
+        action="store_true",
+        help="Modify existing virtual environment and files in PIPX_BIN_DIR and PIPX_MAN_DIR",
+    )
+    add_python_options(p)
     add_pip_venv_args(p)
 
 
@@ -491,10 +563,10 @@ def _add_upgrade(subparsers, venv_completer: VenvCompleter, shared_parser: argpa
     p = subparsers.add_parser(
         "upgrade",
         help="Upgrade a package",
-        description="Upgrade a package in a pipx-managed Virtual Environment by running 'pip install --upgrade PACKAGE'",
+        description="Upgrade package(s) in pipx-managed Virtual Environment(s) by running 'pip install --upgrade PACKAGE'",
         parents=[shared_parser],
     )
-    p.add_argument("package").completer = venv_completer
+    p.add_argument("packages", help="package names(s) to upgrade", nargs="+").completer = venv_completer
     p.add_argument(
         "--include-injected",
         action="store_true",
@@ -814,6 +886,7 @@ def get_command_parser() -> Tuple[argparse.ArgumentParser, Dict[str, argparse.Ar
 
     subparsers_with_subcommands = {}
     _add_install(subparsers, shared_parser)
+    _add_install_all(subparsers, shared_parser)
     _add_uninject(subparsers, completer_venvs.use, shared_parser)
     _add_inject(subparsers, completer_venvs.use, shared_parser)
     _add_upgrade(subparsers, completer_venvs.use, shared_parser)
