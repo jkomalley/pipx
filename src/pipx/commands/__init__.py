@@ -31,5 +31,6 @@ __all__ = [
     "environment",
     "list_interpreters",
     "prune_interpreters",
+    "upgrade_interpreters"
     "show",
 ]
