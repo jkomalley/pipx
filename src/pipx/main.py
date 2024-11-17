@@ -423,6 +423,8 @@ def run_pipx_command(args: argparse.Namespace, subparsers: Dict[str, argparse.Ar
         return ExitCode(0)
     elif args.command == "environment":
         return commands.environment(value=args.value)
+    elif args.command == "show":
+        return commands.show(package, venv_dir)
     else:
         raise PipxError(f"Unknown command {args.command}")
 
@@ -928,6 +930,16 @@ def _add_environment(subparsers: argparse._SubParsersAction, shared_parser: argp
     p.add_argument("--value", "-V", metavar="VARIABLE", help="Print the value of the variable.")
 
 
+def _add_show(subparsers: argparse._SubParsersAction, venv_completer: VenvCompleter, shared_parser: argparse.ArgumentParser) -> None:
+    p = subparsers.add_parser(
+        "show",
+        help="Show information about a pipx installed package.",
+        description="Show information about a pipx installed package.",
+        parents=[shared_parser],
+    )
+    p.add_argument("package", help="Name of the package").completer = venv_completer
+
+
 def get_command_parser() -> Tuple[argparse.ArgumentParser, Dict[str, argparse.ArgumentParser]]:
     venv_container = VenvContainer(paths.ctx.venvs)
 
@@ -995,6 +1007,7 @@ def get_command_parser() -> Tuple[argparse.ArgumentParser, Dict[str, argparse.Ar
     _add_runpip(subparsers, completer_venvs.use, shared_parser)
     _add_ensurepath(subparsers, shared_parser)
     _add_environment(subparsers, shared_parser)
+    _add_show(subparsers, completer_venvs.use, shared_parser)
 
     parser.add_argument("--version", action="store_true", help="Print version and exit")
     subparsers.add_parser(
